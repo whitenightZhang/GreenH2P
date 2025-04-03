@@ -1,5 +1,6 @@
 # =============================================================================
 # 3. 可再生能源制氢
+# 3. Renewable hydrogen production
 # =============================================================================
 
 import pandas as pd
@@ -10,20 +11,27 @@ from gurobipy import Model, GRB
 
 # =============================================================================
 # 1. 数据加载
+# 1. data loading
 # =============================================================================
 # 请确保文件 "CF_NM_2023.csv" 存在且第一列为PV数据、第二列为风电数据
+# Please make sure file "CF_NM_2023.csv" exists, and the first column is PV data, the second column is win data
 wind_solar_data = pd.read_csv('CF_NM_2023.csv')
-pv_output   = wind_solar_data.iloc[:, 0].values   # 光伏输出曲线（无量纲或功率比例）
-wind_output = wind_solar_data.iloc[:, 1].values   # 风电输出曲线
+pv_output   = wind_solar_data.iloc[:, 0].values   # 光伏输出曲线（无量纲或功率比例）(PV theoretical capacity factor)
+wind_output = wind_solar_data.iloc[:, 1].values   # 风电输出曲线 (Wind theoretical capacity factor)
 
 # =============================================================================
 # 2. 参数定义
+# 2. Parameter definitions
 # =============================================================================
 # 2.1 可再生能源与电池参数
-wind_cost = 800            # 风电安装成本 ($/kW)
-pv_cost   = 300            # 光伏安装成本 ($/kW)
-battery_cost = 150         # 储能安装成本 ($/kW)
-battery_efficiency = 0.98  
+# 2.1 renewable and battery parameters
+wind_cost = 800            # 风电安装成本 ($/kW) # wind installation cost ($/kW)
+pv_cost   = 300            # 光伏安装成本 ($/kW) # PV installation cost ($/kW)
+battery_cost = 150         # 储能安装成本 ($/kW) # battery installation cost ($/kW)
+battery_efficiency = 0.98  # LFP's efficiency is around 92-94% NCA 91-93% https://www.sandia.gov/ess-ssl/docs/pr_conferences/2016/Monday_Presentations/27_Daiwon_Choi.pdf
+# C: There is no E_2_P ratio?
+# There should be 2 investment costs? One for E (energy), one for P (power)?
+# e.g. in DIETER: stodata("c_inv_overnight_sto_e",sto) = stodata("c_inv_overnight_sto_p",sto) / stodata("e_to_p",sto);
 battery_charge_penalty = 0.00001  # ($/kWh)
 battery_discharge_penalty = 0.000 # ($/kWh)
 battery_om = battery_cost * 0.03
@@ -32,26 +40,30 @@ wind_lifetime = 20
 pv_lifetime = 25
 
 # 2.2 电解槽参数（制氢设备，分AE与PEM两种）
+# 2.2. Electrolyzer parameters (hydrogen productin equipment, AE (Alkaline) and PEM (Proton Exchange Membrane) two types
 electrolyzer_cost_AE = 300      # ($/kW)
 electrolyzer_cost_PEM = 500      # ($/kW)
 electrolyzer_om_AE = electrolyzer_cost_AE * 0.03
 electrolyzer_om_PEM = electrolyzer_cost_PEM * 0.03
 electrolyzer_lifetime = 15
-electrolyzer_eff = 0.7       # 电解槽效率
+electrolyzer_eff = 0.7       # Electrolyzer efficiency
 
 # 2.3 氢气存储参数
+# 2.3 hydrogen storage parameters (above ground, with compression?)
 hydrogen_storage_cost = 1500  # ($/kg)
 hydrogen_storage_om   = hydrogen_storage_cost * 0.03
 hydrogen_charge_penalty = 0.00001  # ($/kgH2)
-hydrogen_storage_efficiency = 0.9
+hydrogen_storage_efficiency = 0.9 (referene https://www.sciencedirect.com/science/article/abs/pii/S2352152X22005114 ? )
 hydrogen_storage_elec = 0.33       # kWh/kg H2（充氢所需电耗）
-hydrogen_storage_lifetime = 25
+hydrogen_storage_lifetime = 25     
 
 # 2.4 目标制氢参数
+# 2.4 Hydrogen demand
 target_hydrogen_production = 10 * 1000  # kg/年，即10吨/年
 hourly_hydrogen_demand = target_hydrogen_production / 8760
 
 # 2.5 年化成本计算（折现率）
+# 2.5 Annualtization of costs
 discount_rate = 0.07
 wind_annual_cost = wind_cost * discount_rate / (1 - (1 + discount_rate) ** -wind_lifetime) + wind_cost * 0.03
 pv_annual_cost = pv_cost * discount_rate / (1 - (1 + discount_rate) ** -pv_lifetime) + pv_cost * 0.03
@@ -60,21 +72,26 @@ electrolyzer_annual_cost_AE = electrolyzer_cost_AE * discount_rate / (1 - (1 + d
 electrolyzer_annual_cost_PEM = electrolyzer_cost_PEM * discount_rate / (1 - (1 + discount_rate) ** -electrolyzer_lifetime) + electrolyzer_om_PEM
 hydrogen_storage_annual_cost = hydrogen_storage_cost * discount_rate / (1 - (1 + discount_rate) ** -hydrogen_storage_lifetime) + hydrogen_storage_om
 
-# 2.6 逐时灵活性参数（限制电解槽功率变化率）
+# 2.6 逐时灵活性参数（限制电解槽功率变化率）(C: a bit more explanation here)
+# 2.6 Hourly flexibility parameters (restrict rate of change of electrolyzer power)
 Flex_up = 0.05  
 Flex_mid = 0.1  
 Flex_down = 0.2  
 surplus_penalty = 0.00001
 
 # 2.7 供需平衡聚合尺度选择
+# 2.7 Supply-demand balance aggregation dimension
 # 可选值："hourly"、"3hourly"、"daily"、"weekly"、"monthly"、"annual"
+# Can choose from: "hourly"、"3hourly"、"daily"、"weekly"、"monthly"、"annual"
 aggregation_mode = "annual"
 
 # =============================================================================
 # 3. 模型创建与变量定义
+# 3. Model build and variable definition
 # =============================================================================
 model = Model("HydrogenProductionOptimization")
 # 设置模型求解参数
+# Set solver parameters
 model.setParam('TimeLimit', 1000)
 model.setParam('MIPFocus', 1)
 model.setParam('Threads', 1)
@@ -100,7 +117,7 @@ electrolyzer_power_AE = model.addVars(time_steps, lb=0, name="electrolyzer_power
 electrolyzer_power_PEM = model.addVars(time_steps, lb=0, name="electrolyzer_power_PEM")
 
 # 电池储能相关变量
-energy_balance = model.addVars(time_steps, lb=0, name="energy_balance")
+energy_balance = model.addVars(time_steps, lb=0, name="energy_balance") #"electricity balance" may be better?
 battery_charge = model.addVars(time_steps, lb=0, name="battery_charge")
 battery_discharge = model.addVars(time_steps, lb=0, name="battery_discharge")
 
@@ -108,6 +125,7 @@ battery_discharge = model.addVars(time_steps, lb=0, name="battery_discharge")
 surplus = model.addVars(time_steps, lb=0, name="surplus")
 
 # 氢气存储相关变量
+# https://www.sciencedirect.com/science/article/pii/S036031992404028X
 hydrogen_storage_balance = model.addVars(time_steps, lb=0, name="hydrogen_storage_balance")
 hydrogen_charge = model.addVars(time_steps, lb=0, name="hydrogen_charge")
 hydrogen_discharge = model.addVars(time_steps, lb=0, name="hydrogen_discharge")
@@ -168,7 +186,7 @@ for t in range(time_steps):
         )
 
 # 5.3 氢气供需平衡约束（支持不同时间聚合尺度）
-# 转换系数：电解槽产氢量 = 出力 * electrolyzer_eff * 3.6/120
+# 转换系数：电解槽产氢量 = 出力 * electrolyzer_eff * 3.6/120 (C: 3.6/120?)
 conversion_factor = electrolyzer_eff * 3.6 / 120
 
 if aggregation_mode == "hourly":
